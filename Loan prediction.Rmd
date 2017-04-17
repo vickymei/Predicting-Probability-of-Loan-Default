@@ -1,0 +1,163 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+#setwd("Desktop/stat542/project3/")
+loadBook = read.csv("lending-club-loan-data/loan.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+loadBook_predict = subset(loadBook, select = c("loan_amnt", "term", "int_rate", "sub_grade", "annual_inc","loan_status","verification_status","revol_util","total_acc","total_pymnt_inv","purpose"))
+``` 
+
+```{r}
+default_index = loadBook_predict$loan_status == "Default" | loadBook_predict$loan_status == "Charged Off" | loadBook_predict$loan_status == "Late (31-120 days)" | loadBook_predict$loan_status == "Late (16-30 days)"| loadBook_predict$loan_status == "Does not meet the credit policy. Status:Charged Off"
+loadBook_predict$loan_status[default_index] = 1
+loadBook_predict$loan_status[!default_index] = 0
+```
+
+```{r}
+library(DescTools)
+library(ggplot2)
+Desc(loadBook_predict$sub_grade, main = "sub grade", plotit = 1)
+box_plane = ggplot(loadBook_predict, aes(sub_grade, int_rate))
+box_plane + geom_boxplot(aes(fill = sub_grade))+ labs(title = "Interest rate by grade", x = "Grade", y= "Interest Rate")
+s_plane = ggplot(loadBook_predict, aes(purpose, fill = loan_status))
+s_plane + geom_bar(position = "fill") + labs(title = "Status groups by purpose", x = "Purpose" , y = "Rate")
+g_plane = ggplot(loadBook_predict, aes(sub_grade, fill = loan_status))
+g_plane + geom_bar(position = "fill") + labs(title = "Status groups by subgrade", x = "Subgrade" , y = "Rate")
+v_plane = ggplot(loadBook_predict, aes(verification_status, fill = loan_status))
+v_plane + geom_bar(position = "fill") + labs(title = "Status groups by verification status", x = "verification status" , y = "Rate")
+```
+
+```{r}
+loadBook_predict$sub_grade = as.numeric(as.factor(loadBook_predict$sub_grade))
+loadBook_predict$verification_status = as.numeric(as.factor(loadBook_predict$verification_status))
+loadBook_predict$term = as.numeric(as.factor(loadBook_predict$term))
+loadBook_predict$loan_status = as.factor(loadBook_predict$loan_status)
+```
+
+```{r}
+loadBook_predict1 = na.omit(loadBook_predict)
+loadBook_predict1$loan_status = as.numeric(as.factor(loadBook_predict1$loan_status))
+library(corrplot)
+numeric_var = colnames(loadBook_predict)[!names(loadBook_predict) %in% c("purpose", "loan_status")]
+correlations = cor(loadBook_predict1[,c(numeric_var,'loan_status')])
+correlations
+corrplot(correlations, method = "square")
+```
+
+```{r}
+library(caret)
+indexy = numeric_var = colnames(loadBook_predict)[!names(loadBook_predict) %in% c("loan_status")]
+trainy = loadBook_predict$loan_status
+trainx = loadBook_predict[,indexy]
+datasplit = createDataPartition(y = trainy, p = 0.75,list = FALSE)
+testx = trainx[-datasplit,]
+testy = trainy[-datasplit]
+trainx = trainx[datasplit,]
+trainy = trainy[datasplit]
+trainy = as.factor(trainy)
+```
+
+
+```{r}
+numeric_var = colnames(loadBook_predict)[!names(loadBook_predict) %in% c("purpose", "loan_status")]
+for(j in numeric_var) {
+  na.id = is.na(trainx[,j])
+  na.id2 = is.na(testx[,j])
+  tempMedian = median(trainx[,j], na.rm = TRUE)
+  tempMedian2 = median(testx[,j], na.rm = TRUE)
+  trainx[which(na.id),j] = tempMedian
+  testx[which(na.id2),j] = tempMedian2
+}
+train.index = which(trainx$purpose == "small_business" | trainx$purpose == "educational")
+test.index = which(testx$purpose == "small_business" | testx$purpose == "educational")
+```
+
+```{r}
+start=proc.time()
+library(randomForest)
+model1 = randomForest(trainy[train.index] ~., data = trainx[train.index,numeric_var], ntree=100, importance = T, na.rm = TRUE)
+pred1 = predict(model1, testx[test.index,numeric_var], type = "prob")
+time1=proc.time()-start
+```
+
+```{r}
+start=proc.time()
+model2 = randomForest(trainy[-train.index] ~., data = trainx[-train.index,numeric_var], ntree=100, importance = T, na.rm = TRUE)
+pred2 = predict(model2, testx[-test.index,numeric_var], type = "prob")
+time2=proc.time()-start
+```
+
+```{r}
+LogLoss = function(actual, predicted,eps = 1e-15) {
+  predicted = pmin(pmax(predicted,eps),1-eps) 
+  - mean(actual* log(predicted) + (1-actual) * log(1- predicted))
+}
+```
+
+```{r}
+test1 = data.frame(actual=numeric(length(testy)),probs = numeric(length(testy)))
+test1$actual = as.numeric(testy) - 1
+test1$probs[test.index] = pred1[,2]
+test1$probs[-test.index] = pred2[,2]
+loss1 = LogLoss(test1$actual, test1$probs)
+```
+
+```{r}
+library(ipred)
+start=proc.time()
+model3 = bagging(trainy[train.index] ~., data = trainx[train.index,numeric_var],mfinal = 100)
+pred3 = predict(model3, testx[test.index,numeric_var], type = "prob")
+time3=proc.time()-start
+```
+
+```{r}
+start=proc.time()
+model4 = bagging(trainy[-train.index] ~., data = trainx[-train.index,numeric_var],length_disviosr = 4, iterations = 100)
+pred4 = predict(model3, testx[-test.index,numeric_var], type = "prob")
+time4=proc.time()-start
+```
+
+```{r}
+test2 = data.frame(actual=numeric(length(testy)),probs = numeric(length(testy)))
+test2$actual = as.numeric(testy) - 1
+test2$probs[test.index] = pred3[,2]
+test2$probs[-test.index] = pred4[,2]
+loss2 = LogLoss(test2$actual, test2$probs)
+```
+
+```{r}
+start=proc.time()
+model5 = glm(trainy[train.index] ~., data = trainx[train.index,numeric_var], family = "binomial")
+pred5 = predict(model5, testx[test.index,numeric_var], type = "response")
+time5=proc.time()-start
+```
+
+```{r}
+start=proc.time()
+model6 = glm(trainy[-train.index] ~., data = trainx[-train.index,numeric_var], family = "binomial")
+pred6 = predict(model5, testx[-test.index,numeric_var], type = "response")
+time6=proc.time()-start
+```
+
+```{r}
+test3 = data.frame(actual=numeric(length(testy)),probs = numeric(length(testy)))
+test3$actual = as.numeric(testy) - 1
+test3$probs[test.index] = pred5
+test3$probs[-test.index] = pred6
+loss3 = LogLoss(test3$actual, test2$probs)
+```
+
+```{r}
+fake.loss1 = LogLoss(as.numeric(testy[test.index])-1, pred1[,2])
+fake.loss2 = LogLoss(as.numeric(testy[test.index])-1, pred3[,2])
+fake.loss3 = LogLoss(as.numeric(testy[test.index])-1, pred5)
+```
+
+
+
